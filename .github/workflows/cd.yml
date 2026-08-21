@@ -1,0 +1,63 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+# CHANGE ME: Set to true when ready to publish to PyPI
+env:
+  PUBLISH_TO_PYPI: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@v6
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Determine version
+        id: version
+        run: |
+          LATEST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          export LATEST_TAG
+          uv run python .github/workflows/cd_version.py
+      - name: Commit version bump
+        run: |
+          if git status --porcelain | grep -q "pyproject.toml"; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add pyproject.toml
+            git commit -m "chore: bump version to v${{ steps.version.outputs.version }}"
+            git push
+          fi
+      - name: Tag release
+        run: |
+          VERSION="v${{ steps.version.outputs.version }}"
+          if git tag -l "$VERSION" | grep -q "$VERSION"; then
+            echo "Tag $VERSION already exists."
+          else
+            git tag "$VERSION"
+            git push origin "$VERSION"
+          fi
+      - name: Build
+        run: uv build
+      - name: Publish to PyPI (Trusted Publishing)
+        if: env.PUBLISH_TO_PYPI == 'true'
+        run: uv publish
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.whl
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}

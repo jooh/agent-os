@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "dbos-python": {
+      "source": "dbos-inc/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/dbos-python/SKILL.md",
+      "computedHash": "7cba2bbc7c018fc448871b3d22d252e4d5f73d343e2fb8ad214d66f26461812d"
+    }
+  }
+}
