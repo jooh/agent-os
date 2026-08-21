@@ -11,6 +11,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
+    "pydantic-ai[dbos]>=2.33.0",
 ]
 
 [project.license]
