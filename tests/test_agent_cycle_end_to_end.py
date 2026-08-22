@@ -256,7 +256,7 @@ def scripted_agent_models() -> ScriptedAgentModels:
                     "run_command",
                     {
                         "command": (
-                            f"{python} -c 'from parity import is_even; "
+                            f"{python} -B -c 'from parity import is_even; "
                             "assert is_even(2); assert not is_even(3)'"
                         )
                     },
@@ -286,7 +286,7 @@ def scripted_agent_models() -> ScriptedAgentModels:
                 "run_command",
                 {
                     "command": (
-                        f"{python} -c 'from parity import is_even; "
+                        f"{python} -B -c 'from parity import is_even; "
                         "assert is_even(2); assert not is_even(3); assert is_even(0); "
                         "assert is_even(-2); assert not is_even(-3)'"
                     )
