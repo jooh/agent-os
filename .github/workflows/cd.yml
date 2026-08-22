@@ -1,8 +1,8 @@
 name: CD
 
+# Disabled during the POC. Restore the main-branch push trigger and job condition when releases start.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 # CHANGE ME: Set to true when ready to publish to PyPI
 env:
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   publish:
-    if: github.actor != 'github-actions[bot]'
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

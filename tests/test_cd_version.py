@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from typing import Protocol, cast
 from pathlib import Path
+from typing import Protocol, cast
 
 
 class CdVersionModule(Protocol):

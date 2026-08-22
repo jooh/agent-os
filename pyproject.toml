@@ -11,8 +11,19 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
+    "fastapi>=0.116.0",
     "pydantic-ai[dbos]>=2.33.0",
+    "sqlalchemy>=2.0.52",
+    "uvicorn>=0.35.0",
 ]
+
+[project.optional-dependencies]
+postgres = [
+    "psycopg[binary]>=3.3.4",
+]
+
+[project.scripts]
+agent-os = "agent_os.cli:main"
 
 [project.license]
 file = "LICENSE"

@@ -4,9 +4,9 @@ import os
 import pathlib
 import re
 import tomllib
-import tomli_w
 from dataclasses import dataclass
 
+import tomli_w
 
 # Strict semantic versioning pattern: MAJOR.MINOR.PATCH
 # - MAJOR is either 0 (pre-1.0 semantics) or a non-zero integer without leading zeros.
@@ -24,7 +24,7 @@ class Version:
     patch: int
 
     @classmethod
-    def parse(cls, value: str) -> "Version | None":
+    def parse(cls, value: str) -> Version | None:
         match = VERSION_PATTERN.match(value)
         if not match:
             return None
@@ -34,7 +34,7 @@ class Version:
             patch=int(match.group("patch")),
         )
 
-    def bump_patch(self) -> "Version":
+    def bump_patch(self) -> Version:
         return Version(self.major, self.minor, self.patch + 1)
 
     def __str__(self) -> str:
@@ -54,7 +54,7 @@ def write_version(pyproject_path: pathlib.Path, version: Version) -> None:
     data = tomllib.loads(pyproject_path.read_text())
     project = data.get("project")
     if not isinstance(project, dict):
-        raise ValueError(f"Missing [project] table in {pyproject_path}")
+        raise TypeError(f"Missing [project] table in {pyproject_path}")
     if "version" not in project:
         raise ValueError(f"Missing project.version in {pyproject_path}")
     project["version"] = str(version)
