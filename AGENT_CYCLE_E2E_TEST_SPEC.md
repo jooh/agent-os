@@ -1,6 +1,6 @@
 # Deterministic Agent-Cycle End-to-End Test
 
-Status: proposed follow-up; this test is not implemented in the current POC.
+Status: implemented by `tests/test_agent_cycle_end_to_end.py`.
 
 ## Goal
 
@@ -8,7 +8,7 @@ Add one pytest test that completes a full reconciliation cycle through the real 
 repository tools, DBOS workflows, SQLite persistence, and Git integration without calling an
 external model provider.
 
-Suggested test: `tests/test_agent_cycle_end_to_end.py`.
+Implemented test: `tests/test_agent_cycle_end_to_end.py`.
 
 ## Mocking boundary
 

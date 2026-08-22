@@ -19,8 +19,9 @@ from pydantic_ai import (
     ModelMessagesTypeAdapter,
     RunContext,
 )
+from pydantic_ai.capabilities import ResolveModelId
 from pydantic_ai.durable_exec.dbos import DBOSDurability
-from pydantic_ai.models import Model
+from pydantic_ai.models import Model, ModelResolutionContext
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import UsageLimits
 
@@ -28,6 +29,7 @@ from agent_os.models import DeveloperTurnResult, PlanComparison, ReviewResult
 from agent_os.store import StateStore
 
 _EVENT_ADAPTER = TypeAdapter(AgentStreamEvent)
+_MODEL_ID_OVERRIDES: dict[str, Model] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +52,12 @@ class ReviewGitDiff(TypedDict):
     head: str
     changed_files: list[str]
     patch: str
+
+
+def _resolve_model_id(
+    _ctx: ModelResolutionContext[AgentDeps], model_id: str
+) -> Model | None:
+    return _MODEL_ID_OVERRIDES.get(model_id)
 
 
 def _resolve(root: str, relative_path: str) -> Path:
@@ -446,7 +454,10 @@ planner_agent = Agent(
         "most two mutually independent, immediately actionable tasks. Do not implement changes."
     ),
     tools=_READ_TOOLS,
-    capabilities=[_durability("agent_os_planner")],
+    capabilities=[
+        ResolveModelId(_resolve_model_id),
+        _durability("agent_os_planner"),
+    ],
     retries=2,
     defer_model_check=True,
 )
@@ -465,7 +476,10 @@ developer_agent = Agent(
         "the orchestration layer owns commits. Return a concise structured summary."
     ),
     tools=_WRITE_TOOLS,
-    capabilities=[_durability("agent_os_developer")],
+    capabilities=[
+        ResolveModelId(_resolve_model_id),
+        _durability("agent_os_developer"),
+    ],
     retries=2,
     defer_model_check=True,
 )
@@ -483,7 +497,10 @@ reviewer_agent = Agent(
         "are no actionable P0-P3 findings."
     ),
     tools=_REVIEW_TOOLS,
-    capabilities=[_durability("agent_os_reviewer")],
+    capabilities=[
+        ResolveModelId(_resolve_model_id),
+        _durability("agent_os_reviewer"),
+    ],
     retries=2,
     defer_model_check=True,
 )
