@@ -109,6 +109,7 @@ def test_repository_tool_steps_and_async_adapters(
     def failed_run(*_args, **_kwargs):
         return subprocess.CompletedProcess([], 2, "", "tool failed")
 
+    monkeypatch.setattr("agent_os.agents.shutil.which", lambda _command: "/usr/bin/rg")
     monkeypatch.setattr("agent_os.agents.subprocess.run", failed_run)
     with pytest.raises(RuntimeError, match="tool failed"):
         list_files_step(str(tmp_path))
