@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "building-pydantic-ai-agents": {
+      "source": "pydantic/skills",
+      "sourceType": "github",
+      "skillPath": "skills/building-pydantic-ai-agents/SKILL.md",
+      "computedHash": "102cbcc4b4a548464814b65c44e1bd7170ff2188d07ec830544560d54133e6e6"
+    },
+    "dbos-python": {
+      "source": "dbos-inc/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/dbos-python/SKILL.md",
+      "computedHash": "7cba2bbc7c018fc448871b3d22d252e4d5f73d343e2fb8ad214d66f26461812d"
+    },
+    "pydantic": {
+      "source": "pydantic/skills",
+      "sourceType": "github",
+      "skillPath": "skills/pydantic/SKILL.md",
+      "computedHash": "2f523749fc2edc5cb3b73435a282373cd69209682be7992b6cde333f30d59254"
+    },
+    "pydantic-ai-harness": {
+      "source": "pydantic/skills",
+      "sourceType": "github",
+      "skillPath": "skills/pydantic-ai-harness/SKILL.md",
+      "computedHash": "24ebd64439b138bb1f7c0fa466d0a64a9d99d36108a670673c9c75c455f9ce8d"
+    }
+  }
+}

@@ -1,0 +1,68 @@
+[project]
+name = "agent-os"
+version = "0.0.0"
+description = "Deterministic loop engineering with DBOS"
+readme = "README.md"
+requires-python = ">=3.14"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "fastapi>=0.116.0",
+    "pydantic-ai[dbos]>=2.33.0",
+    "sqlalchemy>=2.0.52",
+    "uvicorn>=0.35.0",
+]
+
+[project.optional-dependencies]
+postgres = [
+    "psycopg[binary]>=3.3.4",
+]
+
+[project.scripts]
+agent-os = "agent_os.cli:main"
+
+[project.license]
+file = "LICENSE"
+
+[project.urls]
+Homepage = "https://github.com/jooh/agent-os"
+Repository = "https://github.com/jooh/agent-os"
+Issues = "https://github.com/jooh/agent-os/issues"
+
+[build-system]
+requires = [
+    "hatchling>=1.27.0",
+]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "src/agent_os",
+]
+
+[tool.coverage.run]
+branch = true
+source = [
+    "agent_os",
+]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+exclude = ["uv.lock"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.9.10",
+    "tomli-w>=1.0.0",
+    "ty>=0.0.14",
+]
