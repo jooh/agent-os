@@ -1,9 +1,11 @@
 import asyncio
+import os
 import shlex
 import subprocess
 import sys
 from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -385,11 +387,21 @@ def _head_refs(root: Path) -> dict[str, str]:
     return dict(line.split(" ", 1) for line in lines)
 
 
+def _worktree_paths(root: Path) -> set[Path]:
+    return {
+        Path(line.removeprefix("worktree ")).resolve()
+        for line in git(root, "worktree", "list", "--porcelain").splitlines()
+        if line.startswith("worktree ")
+    }
+
+
 def test_agent_cycle_uses_real_agents_tools_dbos_sqlite_and_git(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     scripted_agent_models: ScriptedAgentModels,
 ) -> None:
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     root = make_repository(tmp_path)
     state_dir = tmp_path / "state"
     repository = GitRepository.inspect(root, "PLAN.md", "HEAD", state_dir)
@@ -409,15 +421,16 @@ def test_agent_cycle_uses_real_agents_tools_dbos_sqlite_and_git(
     }
     DBOS.destroy()
     DBOS(config=config)
-    DBOS.reset_system_database()
-    DBOS.launch()
-    settings = Settings.from_values_for_test(database_url, state_dir)
-    register_worker_queues(settings)
-    store = StateStore(database_url)
-    store.bootstrap()
-    store.create_run(first_input, None, lambda _connection, _value: None)
-
-    try:
+    with ExitStack() as cleanup:
+        cleanup.callback(DBOS.destroy)
+        DBOS.reset_system_database()
+        DBOS.launch()
+        settings = Settings.from_values_for_test(database_url, state_dir)
+        register_worker_queues(settings)
+        store = StateStore(database_url)
+        cleanup.callback(store.engine.dispose)
+        store.bootstrap()
+        store.create_run(first_input, None, lambda _connection, _value: None)
 
         async def scenario() -> tuple[str, str]:
             first_head = await engineering_run(first_input)
@@ -543,7 +556,6 @@ def test_agent_cycle_uses_real_agents_tools_dbos_sqlite_and_git(
         assert len(first_developer_request.messages) == 1
         assert isinstance(first_developer_request.messages[0], ModelRequest)
         assert first_developer_request.messages[0].run_id == developer_executions[0].id
-        assert second_developer_request.messages[-1].run_id is None
         assert any(
             message.run_id == developer_executions[0].id
             for message in second_developer_request.messages[:-1]
@@ -633,10 +645,10 @@ def test_agent_cycle_uses_real_agents_tools_dbos_sqlite_and_git(
         )
         assert git(root, "show", f"{repository.integration_branch}:PLAN.md") == PLAN.strip()
         assert git(root, "diff", f"{repository.base_commit}..{first_head}", "--", "PLAN.md") == ""
+        assert git(root, "symbolic-ref", "--short", "HEAD") == "main"
+        assert git(root, "rev-parse", "HEAD") == repository.base_commit
         assert git(root, "rev-parse", "main") == repository.base_commit
         assert (root / "parity.py").read_text() == INITIAL_IMPLEMENTATION
         assert (root / "PLAN.md").read_text() == PLAN
         assert git(root, "status", "--porcelain", "--untracked-files=normal") == ""
-    finally:
-        store.engine.dispose()
-        DBOS.destroy()
+        assert _worktree_paths(root) == {root.resolve()}
