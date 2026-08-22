@@ -116,6 +116,21 @@ def test_repository_tool_steps_and_async_adapters(
         search_repo_step(str(tmp_path), "value")
 
 
+def test_repository_steps_fall_back_when_ripgrep_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "file.txt").write_text("first\nneedle\n")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "internal").write_text("needle\n")
+    monkeypatch.setattr("agent_os.agents.shutil.which", lambda _command: None)
+
+    assert list_files_step(str(tmp_path)) == ["nested/file.txt"]
+    assert search_repo_step(str(tmp_path), "needle") == "nested/file.txt:2:needle\n"
+    with pytest.raises(RuntimeError, match="unterminated character set"):
+        search_repo_step(str(tmp_path), "[")
+
+
 def test_shell_timeout_is_normalized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired("command", 1)

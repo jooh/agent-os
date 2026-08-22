@@ -1,5 +1,7 @@
 import json
+import re
 import shlex
+import shutil
 import subprocess
 from collections.abc import AsyncIterable, Sequence
 from dataclasses import dataclass
@@ -54,8 +56,19 @@ def read_file_step(root: str, relative_path: str) -> str:
     return _resolve(root, relative_path).read_text()
 
 
+def _fallback_repository_files(root: str) -> list[str]:
+    root_path = Path(root)
+    return sorted(
+        path.relative_to(root_path).as_posix()
+        for path in root_path.rglob("*")
+        if path.is_file() and ".git" not in path.relative_to(root_path).parts
+    )
+
+
 @DBOS.step(name="agent_os.tools.list_files")
 def list_files_step(root: str) -> list[str]:
+    if shutil.which("rg") is None:
+        return _fallback_repository_files(root)
     result = subprocess.run(
         ["rg", "--files"],
         cwd=root,
@@ -70,6 +83,20 @@ def list_files_step(root: str) -> list[str]:
 
 @DBOS.step(name="agent_os.tools.search_repo")
 def search_repo_step(root: str, pattern: str) -> str:
+    if shutil.which("rg") is None:
+        try:
+            expression = re.compile(pattern)
+        except re.error as exc:
+            raise RuntimeError(str(exc)) from exc
+        matches: list[str] = []
+        for relative_path in _fallback_repository_files(root):
+            contents = (Path(root) / relative_path).read_text(errors="ignore")
+            matches.extend(
+                f"{relative_path}:{line_number}:{line}"
+                for line_number, line in enumerate(contents.splitlines(), start=1)
+                if expression.search(line)
+            )
+        return "".join(f"{match}\n" for match in matches)
     result = subprocess.run(
         ["rg", "-n", "--", pattern, "."],
         cwd=root,
