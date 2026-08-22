@@ -17,9 +17,15 @@ the plan remain authoritative.
 
 The loopback HTTP API uses `DBOSClient`; it never launches workflows in-process. Four worker roles
 listen to independent database-backed queues: orchestrator, planner, developer, and reviewer. All
-Git, filesystem, subprocess, database, and model I/O executed by workflows is isolated in DBOS
-steps. One SQLite file stores both DBOS history and the application-owned run, session, execution,
-and transcript tables.
+Git, filesystem, subprocess, database, and model I/O performed from workflow execution is isolated
+in DBOS steps. One SQLite file stores both DBOS history and the application-owned run, session,
+execution, and transcript tables.
+
+Database migration, application-table bootstrap, and queue registration happen at process startup,
+outside a DBOS workflow. They are intentionally idempotent but are not DBOS-checkpointed: if startup
+is interrupted, the operator restarts the process and those operations run again. This is a POC
+control-plane boundary; the durable replay guarantee applies after an engineering workflow has been
+enqueued, not to API/worker process initialization itself.
 
 Each target is identified by canonical repository path, the SHA-256 of the committed plan, and the
 captured base commit. Results stop on `agent/<plan>-<base>/integration`; the caller's worktree and
@@ -38,10 +44,19 @@ listen only to their selected role, so a stopped process can be replaced without
 conversation. Successful turns checkpoint full Pydantic AI history before review; planner and
 reviewer histories are deliberately discarded.
 
-Failure and cancellation release the active-target database lock but retain diagnostic Git state.
-Successful completion verifies and reports the integration head, then removes only reconstructable
-worktrees. A later run against the same target performs a fresh comparison and can converge without
-creating tasks, commits, or branch movements.
+`AGENT_OS_MODEL` is a required startup setting for the API and all worker roles. Optional role model
+settings override model selection but do not replace that required baseline configuration.
+
+Failure releases the active-target reservation and retains diagnostic Git state. A cancellation
+request instead moves an active run to `CANCELLING` and keeps that reservation until DBOS durably
+reports the engineering workflow and its known child workflows terminal and the target-scoped
+Git-operation lock is free; only then does the finalizer mark `CANCELLED`, terminalize application
+projections, and release the reservation. DBOS status remains a logical signal, while the separate
+cross-process Git lock fences shared integration/worktree mutations. A task-local non-preemptible
+shell step may still unwind only inside the cancelled run's retained, run-specific worktree.
+Cancelled runs retain diagnostic Git state. Successful completion verifies and reports the
+integration head, then removes only reconstructable worktrees. A later run against the same target
+performs a fresh comparison and can converge without creating tasks, commits, or branch movements.
 
 SQLite is a deliberate single-host POC boundary. The API and every role worker must resolve the same
 absolute database path; SQLite serializes writes and DBOS polls instead of using PostgreSQL

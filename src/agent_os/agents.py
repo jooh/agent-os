@@ -1,12 +1,14 @@
+import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
 import subprocess
-from collections.abc import AsyncIterable, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import TypedDict, cast
 
 from dbos import DBOS
 from pydantic import JsonValue, TypeAdapter
@@ -26,7 +28,6 @@ from agent_os.models import DeveloperTurnResult, PlanComparison, ReviewResult
 from agent_os.store import StateStore
 
 _EVENT_ADAPTER = TypeAdapter(AgentStreamEvent)
-_READ_ONLY_COMMANDS = frozenset({"git", "rg", "ls", "find", "sed", "pwd", "pytest", "uv", "make"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +42,14 @@ class AgentDeps:
     task_id: str | None
     shell_timeout_seconds: int
     allow_writes: bool
+    review_base: str | None = None
+
+
+class ReviewGitDiff(TypedDict):
+    base: str
+    head: str
+    changed_files: list[str]
+    patch: str
 
 
 def _resolve(root: str, relative_path: str) -> Path:
@@ -150,12 +159,12 @@ def replace_text_step(
 def run_command_step(
     root: str, command: str, timeout_seconds: int, allow_writes: bool
 ) -> dict[str, str | int]:
+    if not allow_writes:
+        raise PermissionError("this agent has read-only repository access")
     try:
-        executable = shlex.split(command)[0]
+        shlex.split(command)[0]
     except (ValueError, IndexError) as exc:
         raise ValueError("command must not be empty") from exc
-    if not allow_writes and executable not in _READ_ONLY_COMMANDS:
-        raise PermissionError(f"{executable!r} is not allowed for a read-only agent")
     try:
         result = subprocess.run(
             ["/bin/sh", "-lc", command],
@@ -172,6 +181,101 @@ def run_command_step(
         "stdout": result.stdout,
         "stderr": result.stderr,
     }
+
+
+def _run_read_only_git(
+    root: Path, args: list[str], timeout_seconds: int, *, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    environment = {
+        **os.environ,
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LC_ALL": "C",
+    }
+    try:
+        result = subprocess.run(
+            ["git", "-c", "core.pager=cat", "-C", str(root), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=environment,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(
+            f"Git inspection exceeded {timeout_seconds} seconds"
+        ) from exc
+    if check and result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(detail or "Git inspection failed")
+    return result
+
+
+@DBOS.step(name="agent_os.tools.review_git_diff")
+def review_git_diff_step(
+    root: str,
+    review_base: str | None,
+    relative_path: str | None,
+    timeout_seconds: int,
+) -> ReviewGitDiff:
+    """Inspect the orchestrator-protected commit range without executing repository code."""
+    if review_base is None:
+        raise ValueError("a protected review base is required")
+    if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", review_base) is None:
+        raise ValueError("protected review base must be a full commit ID")
+
+    worktree = Path(root).resolve()
+    top_level = Path(
+        _run_read_only_git(
+            worktree, ["rev-parse", "--show-toplevel"], timeout_seconds
+        ).stdout.strip()
+    ).resolve()
+    if top_level != worktree:
+        raise ValueError("review worktree must be the Git repository root")
+
+    resolved_base = _run_read_only_git(
+        worktree,
+        ["rev-parse", "--verify", f"{review_base}^{{commit}}"],
+        timeout_seconds,
+    ).stdout.strip()
+    if resolved_base != review_base:
+        raise ValueError("protected review base did not resolve exactly")
+    head = _run_read_only_git(
+        worktree, ["rev-parse", "--verify", "HEAD^{commit}"], timeout_seconds
+    ).stdout.strip()
+    ancestry = _run_read_only_git(
+        worktree,
+        ["merge-base", "--is-ancestor", resolved_base, head],
+        timeout_seconds,
+        check=False,
+    )
+    if ancestry.returncode == 1:
+        raise ValueError("protected review base is not an ancestor of HEAD")
+    if ancestry.returncode != 0:
+        detail = ancestry.stderr.strip() or ancestry.stdout.strip()
+        raise RuntimeError(detail or "could not validate protected review range")
+
+    pathspec: list[str] = []
+    if relative_path is not None:
+        candidate = _resolve(root, relative_path)
+        relative = candidate.relative_to(worktree).as_posix()
+        if relative in {"", "."}:
+            raise ValueError("review path must name a repository file")
+        pathspec = [f":(literal){relative}"]
+
+    range_spec = f"{resolved_base}..{head}"
+    common_args = ["--no-ext-diff", "--no-textconv", range_spec, "--", *pathspec]
+    changed = _run_read_only_git(
+        worktree, ["diff", "--name-only", "-z", *common_args], timeout_seconds
+    ).stdout
+    patch = _run_read_only_git(
+        worktree, ["diff", "--no-color", *common_args], timeout_seconds
+    ).stdout
+    return ReviewGitDiff(
+        base=resolved_base,
+        head=head,
+        changed_files=[name for name in changed.split("\0") if name],
+        patch=patch,
+    )
 
 
 async def read_file(ctx: RunContext[AgentDeps], path: str) -> str:
@@ -224,6 +328,22 @@ async def run_command(ctx: RunContext[AgentDeps], command: str) -> dict[str, str
     )
 
 
+async def review_git_diff(
+    ctx: RunContext[AgentDeps], path: str | None = None
+) -> ReviewGitDiff:
+    """Inspect changed files and content in the exact protected base..HEAD review range.
+
+    Optionally provide one repository-relative changed path to narrow the patch. The base
+    and head cannot be selected by the model, and this tool never executes repository code.
+    """
+    return review_git_diff_step(
+        ctx.deps.worktree,
+        ctx.deps.review_base,
+        path,
+        ctx.deps.shell_timeout_seconds,
+    )
+
+
 def serialize_history(messages: Sequence[ModelMessage]) -> list[JsonValue]:
     value = ModelMessagesTypeAdapter.dump_python(list(messages), mode="json")
     return cast(list[JsonValue], value)
@@ -234,9 +354,22 @@ def deserialize_history(history: list[JsonValue]) -> list[ModelMessage]:
 
 
 @DBOS.step(name="agent_os.state.transcript_event")
-def _record_event(deps: AgentDeps, event_type: str, payload: JsonValue) -> None:
-    event = StateStore(deps.database_url).append_event(deps.execution_id, event_type, payload)
-    print(json.dumps(event.model_dump(mode="json"), separators=(",", ":"), sort_keys=True), flush=True)
+def _record_event(
+    deps: AgentDeps, event_type: str, payload: JsonValue, event_key: str
+) -> None:
+    store = StateStore(deps.database_url)
+    try:
+        event = store.append_event(
+            deps.execution_id, event_type, payload, event_key=event_key
+        )
+        print(
+            json.dumps(
+                event.model_dump(mode="json"), separators=(",", ":"), sort_keys=True
+            ),
+            flush=True,
+        )
+    finally:
+        store.engine.dispose()
 
 
 def normalize_event_type(event: AgentStreamEvent) -> str:
@@ -246,16 +379,42 @@ def normalize_event_type(event: AgentStreamEvent) -> str:
     if "ToolResult" in name:
         return "tool.result"
     if "FinalResult" in name:
-        return "agent.final_output"
+        return "model.final_result"
     return "model.stream"
 
 
 async def transcript_handler(
     ctx: RunContext[AgentDeps], stream: AsyncIterable[AgentStreamEvent]
 ) -> None:
-    async for event in stream:
+    workflow_id = DBOS.workflow_id
+    step_id = DBOS.step_id
+    async for ordinal, event in _enumerate_async(stream):
         payload = cast(JsonValue, _EVENT_ADAPTER.dump_python(event, mode="json"))
-        _record_event(ctx.deps, normalize_event_type(event), payload)
+        event_type = normalize_event_type(event)
+        serialized = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+        digest = hashlib.sha256(event_type.encode() + b"\0" + serialized).hexdigest()
+        if workflow_id is not None and step_id is not None:
+            step_status = getattr(DBOS, "step_status", None)
+            attempt = (
+                step_status.current_attempt
+                if step_status is not None and step_status.current_attempt is not None
+                else 0
+            )
+            event_key = (
+                f"dbos:{workflow_id}:{step_id}:attempt:{attempt}:{ordinal}:{digest}"
+            )
+        else:
+            event_key = f"direct:{ctx.deps.execution_id}:{ordinal}:{digest}"
+        _record_event(ctx.deps, event_type, payload, event_key)
+
+
+async def _enumerate_async(
+    stream: AsyncIterable[AgentStreamEvent],
+) -> AsyncIterator[tuple[int, AgentStreamEvent]]:
+    ordinal = 0
+    async for event in stream:
+        yield ordinal, event
+        ordinal += 1
 
 
 def _durability(name: str) -> DBOSDurability[AgentDeps]:
@@ -272,8 +431,9 @@ def _durability(name: str) -> DBOSDurability[AgentDeps]:
     )
 
 
-_READ_TOOLS = [read_file, list_files, search_repo, run_command]
-_WRITE_TOOLS = [*_READ_TOOLS, write_file, replace_text]
+_READ_TOOLS = [read_file, list_files, search_repo]
+_WRITE_TOOLS = [*_READ_TOOLS, run_command, write_file, replace_text]
+_REVIEW_TOOLS = [*_READ_TOOLS, review_git_diff]
 
 planner_agent = Agent(
     TestModel(call_tools=[], custom_output_args={"complete": True, "tasks": []}),
@@ -317,10 +477,12 @@ reviewer_agent = Agent(
     output_type=ReviewResult,
     instructions=(
         "Review only the task-associated diff against the supplied base for technical correctness. "
-        "Inspect context and run relevant checks, but do not edit files and do not judge overall plan "
-        "completeness. Approve exactly when there are no actionable P0-P3 findings."
+        "Use review_git_diff to inspect the exact protected range and repository tools for context. "
+        "Do not edit files or judge overall plan completeness. No command execution or runtime "
+        "validation is available, so base findings on static inspection. Approve exactly when there "
+        "are no actionable P0-P3 findings."
     ),
-    tools=_READ_TOOLS,
+    tools=_REVIEW_TOOLS,
     capabilities=[_durability("agent_os_reviewer")],
     retries=2,
     defer_model_check=True,

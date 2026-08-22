@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from agent_os.models import (
+    CancellationFinalizerInput,
     DeveloperCommand,
     DeveloperTurnResult,
     ImplementationTask,
@@ -11,6 +12,7 @@ from agent_os.models import (
     ReviewIssue,
     ReviewResult,
     RunCreate,
+    RunInput,
 )
 
 
@@ -61,3 +63,50 @@ def test_strict_boundary_models_reject_extra_or_coerced_values(tmp_path: Path) -
     with pytest.raises(ValidationError, match="fix commands require"):
         DeveloperCommand(action="fix", prompt="missing paths")
     assert DeveloperCommand(action="close").action == "close"
+
+
+def test_run_input_constrains_planner_task_limit(tmp_path: Path) -> None:
+    values = {
+        "run_id": "run-1",
+        "workflow_id": "engineering-run:run-1",
+        "target_id": "a" * 64,
+        "repository_path": str(tmp_path),
+        "plan_path": "PLAN.md",
+        "plan_id": "b" * 64,
+        "base_commit": "c" * 40,
+        "integration_branch": "agent/bbbbbbbbbbbb-cccccccccccc/integration",
+        "database_url": f"sqlite:///{tmp_path / 'state.db'}",
+        "state_dir": str(tmp_path / "state"),
+        "planner_model": "test:model",
+        "developer_model": "test:model",
+        "reviewer_model": "test:model",
+        "max_rounds": 10,
+        "max_review_cycles": 3,
+        "max_developer_turns": 6,
+        "model_request_limit": 50,
+        "shell_timeout_seconds": 900,
+    }
+
+    assert RunInput.model_validate(values).planner_task_limit == 2
+    assert RunInput.model_validate(values | {"planner_task_limit": 1}).planner_task_limit == 1
+    for invalid_limit in (0, 3):
+        with pytest.raises(ValidationError):
+            RunInput.model_validate(values | {"planner_task_limit": invalid_limit})
+
+
+def test_cancellation_finalizer_input_is_strict(tmp_path: Path) -> None:
+    value = CancellationFinalizerInput(
+        run_id="run-1",
+        root_workflow_id="engineering-run:run-1",
+        target_id="a" * 64,
+        database_url=f"sqlite:///{tmp_path / 'state.db'}",
+        state_dir=str(tmp_path / "state"),
+    )
+
+    assert value.finalizer_workflow_id == (
+        "engineering-run:run-1:cancellation-finalizer"
+    )
+    with pytest.raises(ValidationError):
+        CancellationFinalizerInput.model_validate(
+            value.model_dump() | {"unexpected": True}
+        )

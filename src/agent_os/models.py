@@ -85,6 +85,8 @@ class RunCreate(StrictModel):
 class RunStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
+    CANCELLING = "cancelling"
+    FINALIZING = "finalizing"
     COMPLETE = "complete"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -98,12 +100,14 @@ class TaskStatus(StrEnum):
     FIXING = "fixing"
     INTEGRATED = "integrated"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class ExecutionStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class TaskView(StrictModel):
@@ -151,6 +155,7 @@ class AgentExecutionView(StrictModel):
 class TranscriptEvent(StrictModel):
     execution_id: str
     sequence: Annotated[int, Field(gt=0)]
+    event_key: NonEmptyString | None = None
     event_type: NonEmptyString
     payload: JsonValue
     created_at: datetime
@@ -175,6 +180,19 @@ class RunInput(StrictModel):
     max_developer_turns: Annotated[int, Field(gt=0)]
     model_request_limit: Annotated[int, Field(gt=0)]
     shell_timeout_seconds: Annotated[int, Field(gt=0)]
+    planner_task_limit: Annotated[int, Field(ge=1, le=2)] = 2
+
+
+class CancellationFinalizerInput(StrictModel):
+    run_id: NonEmptyString
+    root_workflow_id: NonEmptyString
+    target_id: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    database_url: NonEmptyString
+    state_dir: NonEmptyString
+
+    @property
+    def finalizer_workflow_id(self) -> str:
+        return f"{self.root_workflow_id}:cancellation-finalizer"
 
 
 class StageResult(StrictModel):

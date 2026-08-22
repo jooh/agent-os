@@ -1,5 +1,7 @@
 # Deterministic Agent-Cycle End-to-End Test
 
+Status: proposed follow-up; this test is not implemented in the current POC.
+
 ## Goal
 
 Add one pytest test that completes a full reconciliation cycle through the real Pydantic AI agents,
@@ -51,8 +53,10 @@ POC's DBOS-checkpointed custom-tool boundary.
 ## Test separation
 
 Keep this as an in-process deterministic agent test because Python `FunctionModel` objects are test
-dependencies, not cross-process configuration. Retain the existing five-process SQLite smoke test
-as the complementary process/API/queue-boundary check.
+dependencies, not cross-process configuration. The current in-process workflow-cycle test mocks the
+agent runner functions, so it does not satisfy this specification. Retain the existing five-process
+SQLite smoke as the complementary process/API/queue-boundary check; it uses the built-in no-op test
+model and does not execute a developer/reviewer correction cycle.
 
 ## Acceptance
 

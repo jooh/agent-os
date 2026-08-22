@@ -1,9 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 from sqlalchemy import create_engine
 
-from agent_os.models import RunInput
+from agent_os.models import CancellationFinalizerInput, RunInput
 from agent_os.runtime import DBOSEnqueuer
 
 
@@ -15,6 +16,7 @@ class FakeClient:
         self.enqueues: list[tuple[dict, tuple]] = []
         self.cancellations: list[tuple[str, bool]] = []
         self.queues: list[tuple[str, dict]] = []
+        self.workflow_queries: list[dict] = []
         self.destroyed = False
         self.instances.append(self)
 
@@ -23,6 +25,25 @@ class FakeClient:
 
     def cancel_workflow(self, workflow_id: str, *, cancel_children: bool):
         self.cancellations.append((workflow_id, cancel_children))
+
+    def list_workflows(self, **query):
+        self.workflow_queries.append(query)
+        if query.get("offset"):
+            return []
+        return [
+            SimpleNamespace(
+                workflow_id="engineering-run:run-1", status="CANCELLED"
+            ),
+            SimpleNamespace(
+                workflow_id="engineering-run:run-1:planner:1", status="SUCCESS"
+            ),
+            SimpleNamespace(
+                workflow_id=(
+                    "engineering-run:run-1:cancellation-finalizer:recovery-attempt"
+                ),
+                status="PENDING",
+            ),
+        ]
 
     def register_queue(self, name: str, **options):
         self.queues.append((name, options))
@@ -66,10 +87,42 @@ def test_dbos_enqueuer_uses_named_queue_and_cancels_children(
     assert args == (value,)
     assert enqueue_client.destroyed
 
+    cancellation = CancellationFinalizerInput(
+        run_id=value.run_id,
+        root_workflow_id=value.workflow_id,
+        target_id=value.target_id,
+        database_url=value.database_url,
+        state_dir=value.state_dir,
+    )
+    with engine.begin() as connection:
+        enqueuer.enqueue_cancellation_finalizer(connection, cancellation)
+    finalizer_client = FakeClient.instances[-1]
+    options, args = finalizer_client.enqueues[0]
+    assert options == {
+        "workflow_name": "agent_os.cancellation_finalizer",
+        "queue_name": "agent_os.orchestrator",
+        "workflow_id": cancellation.finalizer_workflow_id,
+    }
+    assert args == (cancellation,)
+    assert finalizer_client.destroyed
+
     enqueuer.cancel(value.workflow_id)
     cancel_client = FakeClient.instances[-1]
     assert cancel_client.cancellations == [(value.workflow_id, True)]
     assert cancel_client.destroyed
+
+    assert enqueuer.cancellation_confirmed(value.workflow_id) is True
+    confirmation_client = FakeClient.instances[-1]
+    assert confirmation_client.workflow_queries == [
+        {
+            "workflow_id_prefix": value.workflow_id,
+            "load_input": False,
+            "load_output": False,
+            "limit": 100,
+            "offset": 0,
+        }
+    ]
+    assert confirmation_client.destroyed
 
     enqueuer.register_queues(3)
     queue_client = FakeClient.instances[-1]
@@ -81,3 +134,35 @@ def test_dbos_enqueuer_uses_named_queue_and_cancels_children(
     ]
     assert queue_client.queues[2][1]["concurrency"] == 3
     assert queue_client.destroyed
+
+
+def test_cancellation_confirmation_is_conservative_and_paginated(monkeypatch) -> None:
+    class PendingClient(FakeClient):
+        def list_workflows(self, **query):
+            return [
+                SimpleNamespace(
+                    workflow_id="engineering-run:run-1:developer:1", status="PENDING"
+                )
+            ]
+
+    monkeypatch.setattr("agent_os.runtime.DBOSClient", PendingClient)
+    enqueuer = DBOSEnqueuer("sqlite:///state.db")
+    assert enqueuer.cancellation_confirmed("engineering-run:run-1") is False
+    assert PendingClient.instances[-1].destroyed
+
+    class PaginatedClient(FakeClient):
+        def list_workflows(self, **query):
+            if query["offset"] == 0:
+                return [
+                    SimpleNamespace(workflow_id=f"unrelated-{index}", status="SUCCESS")
+                    for index in range(100)
+                ]
+            return [
+                SimpleNamespace(
+                    workflow_id="engineering-run:run-1", status="CANCELLED"
+                )
+            ]
+
+    monkeypatch.setattr("agent_os.runtime.DBOSClient", PaginatedClient)
+    assert enqueuer.cancellation_confirmed("engineering-run:run-1") is True
+    assert PaginatedClient.instances[-1].destroyed

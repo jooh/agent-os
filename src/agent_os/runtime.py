@@ -7,7 +7,7 @@ from dbos import DBOS, DBOSClient, DBOSConfig
 from sqlalchemy.engine import Connection
 
 from agent_os.config import Settings
-from agent_os.models import RunInput
+from agent_os.models import CancellationFinalizerInput, RunInput
 
 ORCHESTRATOR_QUEUE = "agent_os.orchestrator"
 PLANNER_QUEUE = "agent_os.planner"
@@ -15,6 +15,9 @@ DEVELOPER_QUEUE = "agent_os.developer"
 REVIEWER_QUEUE = "agent_os.reviewer"
 QUEUES = (ORCHESTRATOR_QUEUE, PLANNER_QUEUE, DEVELOPER_QUEUE, REVIEWER_QUEUE)
 Role = Literal["orchestrator", "planner", "developer", "reviewer"]
+TERMINAL_DBOS_STATUSES = frozenset(
+    {"SUCCESS", "ERROR", "CANCELLED", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"}
+)
 
 
 class DBOSEnqueuer:
@@ -36,10 +39,67 @@ class DBOSEnqueuer:
         finally:
             client.destroy()
 
+    def enqueue_cancellation_finalizer(
+        self,
+        connection: Connection,
+        finalizer_input: CancellationFinalizerInput,
+    ) -> None:
+        client = DBOSClient(system_database_url=self.database_url)
+        try:
+            client.enqueue_in_transaction(
+                connection,
+                {
+                    "workflow_name": "agent_os.cancellation_finalizer",
+                    "queue_name": ORCHESTRATOR_QUEUE,
+                    "workflow_id": finalizer_input.finalizer_workflow_id,
+                },
+                finalizer_input,
+            )
+        finally:
+            client.destroy()
+
     def cancel(self, workflow_id: str) -> None:
         client = DBOSClient(system_database_url=self.database_url)
         try:
             client.cancel_workflow(workflow_id, cancel_children=True)
+        finally:
+            client.destroy()
+
+    def cancellation_confirmed(self, workflow_id: str) -> bool:
+        """Return whether DBOS logically terminalized the run and its known children.
+
+        DBOS may mark a cancelled workflow terminal while a non-preemptible step is
+        still unwinding in its worker process. This confirms durable DBOS status,
+        not physical process quiescence.
+        """
+        client = DBOSClient(system_database_url=self.database_url)
+        try:
+            offset = 0
+            found = False
+            finalizer_prefix = f"{workflow_id}:cancellation-finalizer"
+            while True:
+                page = client.list_workflows(
+                    workflow_id_prefix=workflow_id,
+                    load_input=False,
+                    load_output=False,
+                    limit=100,
+                    offset=offset,
+                )
+                relevant = [
+                    item
+                    for item in page
+                    if (
+                        item.workflow_id == workflow_id
+                        or item.workflow_id.startswith(f"{workflow_id}:")
+                    )
+                    and not item.workflow_id.startswith(finalizer_prefix)
+                ]
+                found = found or bool(relevant)
+                if any(item.status not in TERMINAL_DBOS_STATUSES for item in relevant):
+                    return False
+                if len(page) < 100:
+                    return found
+                offset += len(page)
         finally:
             client.destroy()
 

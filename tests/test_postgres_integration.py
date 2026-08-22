@@ -62,7 +62,21 @@ def test_postgresql_schema_jsonb_sequence_and_transactional_enqueue(tmp_path: Pa
         task_id=task.id,
     )
     first = store.append_event(f"execution-{suffix}", "model.stream", {"delta": "a"})
-    second = store.append_event(f"execution-{suffix}", "tool.result", {"ok": True})
+    second = store.append_event(
+        f"execution-{suffix}",
+        "tool.result",
+        {"ok": True},
+        event_key="tool-result-1",
+    )
+    assert (
+        store.append_event(
+            f"execution-{suffix}",
+            "tool.result",
+            {"ok": True},
+            event_key="tool-result-1",
+        )
+        == second
+    )
     assert (first.sequence, second.sequence) == (1, 2)
     store.finish_execution(
         f"execution-{suffix}", ExecutionStatus.SUCCEEDED, {"summary": "done"}

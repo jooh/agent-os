@@ -13,6 +13,7 @@ from agent_os.config import Settings
 from agent_os.git import GitError, GitRepository
 from agent_os.models import (
     AgentExecutionView,
+    CancellationFinalizerInput,
     RunCreate,
     RunInput,
     RunStatus,
@@ -25,7 +26,13 @@ from agent_os.store import ActiveRunError, StateStore
 class Enqueuer(Protocol):
     def enqueue(self, connection: Connection, run_input: RunInput, /) -> None: ...
 
+    def enqueue_cancellation_finalizer(
+        self, connection: Connection, finalizer_input: CancellationFinalizerInput, /
+    ) -> None: ...
+
     def cancel(self, workflow_id: str) -> None: ...
+
+    def cancellation_confirmed(self, workflow_id: str, /) -> bool: ...
 
 
 class RunCoordinator:
@@ -66,6 +73,7 @@ class RunCoordinator:
             planner_model=planner_model,
             developer_model=developer_model,
             reviewer_model=reviewer_model,
+            planner_task_limit=self.settings.planner_task_limit,
             max_rounds=self.settings.max_rounds,
             max_review_cycles=self.settings.max_review_cycles,
             max_developer_turns=self.settings.max_developer_turns,
@@ -77,10 +85,36 @@ class RunCoordinator:
         )[0]
 
     def cancel_run(self, run_id: str) -> RunView:
+        current = self.store.get_run(run_id)
+        finalizer_input = CancellationFinalizerInput(
+            run_id=current.id,
+            root_workflow_id=current.workflow_id,
+            target_id=current.target_id,
+            database_url=self.settings.database_url,
+            state_dir=str(self.settings.state_dir),
+        )
+        run, _changed = self.store.request_cancellation(
+            run_id,
+            lambda connection: self.enqueuer.enqueue_cancellation_finalizer(
+                connection, finalizer_input
+            ),
+        )
+        if run.status is not RunStatus.CANCELLING:
+            return run
+        self.enqueuer.cancel(run.workflow_id)
+        return self.refresh_cancellation(run.id)
+
+    def refresh_cancellation(self, run_id: str) -> RunView:
         run = self.store.get_run(run_id)
-        if run.status in {RunStatus.QUEUED, RunStatus.RUNNING}:
-            self.enqueuer.cancel(run.workflow_id)
-            return self.store.update_run(run_id, status=RunStatus.CANCELLED)
+        if (
+            run.status is RunStatus.CANCELLING
+            and self.enqueuer.cancellation_confirmed(run.workflow_id)
+        ):
+            with GitRepository.try_target_operation_lock(
+                self.settings.state_dir, run.target_id
+            ) as acquired:
+                if acquired:
+                    return self.store.finalize_cancellation(run_id)[0]
         return run
 
 
@@ -123,7 +157,7 @@ def create_app(
     @app.get("/v1/runs/{run_id}", response_model=RunView)
     def get_run(run_id: str) -> RunView:
         try:
-            return store.get_run(run_id)
+            return coordinator.refresh_cancellation(run_id)
         except KeyError as exc:
             raise _not_found(run_id) from exc
 
