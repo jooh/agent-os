@@ -100,16 +100,15 @@ sqlite3 ~/.local/state/agent-os/agent-os.sqlite3 \
   'select execution_id, sequence, event_type, payload from transcript_events order by execution_id, sequence;'
 ```
 
-The test suite covers the real Pydantic AI agents with `TestModel` at the agent boundary. Its
-in-process workflow-cycle test separately replaces the three agent runner functions while exercising
-DBOS orchestration, SQLite persistence, and Git integration. The five-process SQLite smoke starts the
-API and all four worker roles, then uses the built-in no-op test model to verify startup, queues, HTTP,
-SSE, persistence, and a converged rerun; it does not exercise a developer/reviewer correction cycle.
+The test suite covers the real Pydantic AI agents with `TestModel` at the agent boundary and a
+deterministic `FunctionModel` test that exercises the full planner/developer/reviewer correction
+cycle through DBOS, SQLite, repository tools, and Git. The in-process workflow-cycle test separately
+replaces the three agent runner functions, while the five-process SQLite smoke uses the built-in
+no-op model to verify startup, queues, HTTP, SSE, persistence, and a converged rerun.
 
-[AGENT_CYCLE_E2E_TEST_SPEC.md](AGENT_CYCLE_E2E_TEST_SPEC.md) specifies a future deterministic
-`FunctionModel` test that will exercise the full planner/developer/reviewer tool-calling cycle. For an
-optional provider smoke test today, set `AGENT_OS_MODEL` and its provider credential, start the five
-processes above, and target a disposable clean repository.
+[AGENT_CYCLE_E2E_TEST_SPEC.md](AGENT_CYCLE_E2E_TEST_SPEC.md) documents the deterministic agent-cycle
+test. For an optional provider smoke test, set `AGENT_OS_MODEL` and its provider credential, start the
+five processes above, and target a disposable clean repository.
 
 SQLite intentionally limits this POC to one host. PostgreSQL remains an optional migration path for
 multi-host or higher-write-concurrency deployments: run `uv sync --extra postgres --dev` in the
