@@ -400,6 +400,11 @@ def test_agent_cycle_uses_real_agents_tools_dbos_sqlite_and_git(
     monkeypatch: pytest.MonkeyPatch,
     scripted_agent_models: ScriptedAgentModels,
 ) -> None:
+    for name in tuple(os.environ):
+        if name in {"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"} or name.startswith(
+            ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+        ):
+            monkeypatch.delenv(name)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     root = make_repository(tmp_path)
@@ -578,6 +583,7 @@ def test_agent_cycle_uses_real_agents_tools_dbos_sqlite_and_git(
             first_turn_parts
         )
 
+        task_head = git(root, "rev-parse", repository.task_branch(task.id))
         review_results: list[dict[str, object]] = []
         for execution in executions_by_role["reviewer"]:
             last_capture = reviewer_runs[execution.id][-1]
@@ -594,6 +600,12 @@ def test_agent_cycle_uses_real_agents_tools_dbos_sqlite_and_git(
         ]
         assert review_results[0]["head"] != review_results[1]["head"]
         assert review_results[1]["head"] == first_head
+        first_review_head = review_results[0]["head"]
+        assert isinstance(first_review_head, str)
+        assert first_review_head == git(root, "rev-parse", f"{first_head}^")
+        assert git(
+            root, "rev-list", "--parents", "-n", "1", first_review_head
+        ).split() == [first_review_head, repository.base_commit, task_head]
 
         events = [
             event
@@ -638,7 +650,6 @@ def test_agent_cycle_uses_real_agents_tools_dbos_sqlite_and_git(
         ]
         assert all(_object(part["content"])["returncode"] == 0 for part in command_results)
 
-        task_head = git(root, "rev-parse", repository.task_branch(task.id))
         git(root, "merge-base", "--is-ancestor", task_head, first_head)
         assert git(root, "show", f"{repository.integration_branch}:parity.py") == (
             CORRECT_IMPLEMENTATION.strip()
